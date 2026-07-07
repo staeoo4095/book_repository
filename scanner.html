@@ -83,7 +83,7 @@ video {
   </div>
 </div>
 
-<div id="status">바코드를 사각형 안에 맞춰주세요</div>
+<div id="status">바코드를 사각형 안에 천천히 맞춰주세요<br><span style="font-size:11px;opacity:0.6;">밝은 곳에서 / 바코드 전체가 보이게 / 살짝 기울여도 됩니다</span></div>
 
 <div id="result">
   <div id="result-title"></div>
@@ -106,16 +106,35 @@ document.head.appendChild(script);
 
 function startScan() {
   const video = document.getElementById('video');
-  const codeReader = new ZXing.BrowserMultiFormatReader();
+
+  // EAN-13 전용 리더 (ISBN 바코드 형식)
+  // 해상도 높여서 인식률 향상
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    ZXing.BarcodeFormat.EAN_13,
+    ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.CODE_128,
+  ]);
+
+  const codeReader = new ZXing.BrowserMultiFormatReader(hints, {
+    delayBetweenScanAttempts: 200
+  });
 
   codeReader.decodeFromConstraints(
-    { video: { facingMode: 'environment' } },
+    {
+      video: {
+        facingMode: 'environment',
+        width:  { ideal: 1920 },
+        height: { ideal: 1080 }
+      }
+    },
     video,
     (result, err) => {
       if (!result) return;
       const val = result.getText().replace(/-/g, '');
       if (val.length === 13 || val.length === 10) {
-        if (val === detectedISBN) return; // 중복 방지
+        if (val === detectedISBN) return;
         detectedISBN = val;
         showResult(val);
       }
@@ -124,7 +143,7 @@ function startScan() {
     zxingControls = ctrl;
   }).catch(e => {
     document.getElementById('status').textContent =
-      '카메라 오류: ' + e.name + '\n' +
+      '카메라 오류: ' + e.name + ' — ' +
       (e.name === 'NotAllowedError' ? '카메라 권한을 허용해주세요.' : e.message);
   });
 }

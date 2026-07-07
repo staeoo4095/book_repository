@@ -156,10 +156,20 @@ function showResult(isbn) {
 }
 
 function confirmScan() {
-  if (!detectedISBN || !callback) return;
-  // GAS 웹앱으로 ISBN 전달
-  const url = decodeURIComponent(callback) + '?isbn=' + detectedISBN;
-  window.location.href = url;
+  if (!detectedISBN) return;
+  // opener(GAS 웹앱)에 postMessage로 ISBN 전달
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage({ type: 'ISBN_SCANNED', isbn: detectedISBN }, '*');
+    window.close();
+  } else {
+    // opener가 없으면 URL 방식으로 폴백
+    if (!callback) {
+      document.getElementById('status').textContent = '등록 완료! 앱으로 돌아가세요.';
+      return;
+    }
+    const url = decodeURIComponent(callback) + '?isbn=' + detectedISBN;
+    window.location.href = url;
+  }
 }
 
 function closeScanner() {

@@ -94,7 +94,9 @@ video {
 <script>
 const params   = new URLSearchParams(window.location.search);
 const callback = params.get('callback') || '';
+const ALADIN_KEY = 'ttbstaeoo1907001';
 let detectedISBN = '';
+let bookInfo     = null;
 let zxingControls = null;
 
 // ZXing 로드
@@ -106,9 +108,6 @@ document.head.appendChild(script);
 
 function startScan() {
   const video = document.getElementById('video');
-
-  // EAN-13 전용 리더 (ISBN 바코드 형식)
-  // 해상도 높여서 인식률 향상
   const hints = new Map();
   hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
   hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
@@ -116,11 +115,9 @@ function startScan() {
     ZXing.BarcodeFormat.EAN_8,
     ZXing.BarcodeFormat.CODE_128,
   ]);
-
   const codeReader = new ZXing.BrowserMultiFormatReader(hints, {
     delayBetweenScanAttempts: 150
   });
-
   codeReader.decodeFromConstraints(
     {
       video: {
@@ -134,10 +131,10 @@ function startScan() {
     (result, err) => {
       if (!result) return;
       const val = result.getText().replace(/-/g, '');
-      if (val.length === 13 || val.length === 10) {
-        if (val === detectedISBN) return;
+      if ((val.length === 13 || val.length === 10) && val !== detectedISBN) {
         detectedISBN = val;
-        showResult(val);
+        // 스캔 성공 즉시 알라딘 API 직접 호출 (JSONP)
+        lookupISBNDirect(val);
       }
     }
   ).then(ctrl => {
@@ -149,25 +146,95 @@ function startScan() {
   });
 }
 
-function showResult(isbn) {
+// ── 알라딘 JSONP 직접 호출 ────────────────────────────────────────────────────
+function lookupISBNDirect(isbn) {
+  // 스캔 중지 + 로딩 표시
+  document.getElementById('status').textContent = '📚 책 정보 조회 중...';
+  document.getElementById('result-title').textContent = '조회 중...';
   document.getElementById('result-isbn').textContent  = 'ISBN: ' + isbn;
-  document.getElementById('result-title').textContent = '✅ 바코드 인식됨';
   document.getElementById('result').classList.add('show');
+  document.getElementById('result-btn').disabled = true;
+
+  const cbName = 'aladin_cb_' + Date.now();
+  let done = false;
+
+  window[cbName] = function(success, data) {
+    done = true;
+    cleanup();
+    if (success && data && data.item && data.item.length > 0) {
+      const item = data.item[0];
+      bookInfo = {
+        isbn,
+        title:     (item.title     || '').replace(/\s*-\s*.*$/, '').trim(),
+        author:    (item.author    || '').split('(')[0].trim(),
+        publisher: (item.publisher || '').trim(),
+        stage:     ''
+      };
+      showBookResult(bookInfo);
+    } else {
+      // 책 정보 없으면 ISBN만 전달
+      bookInfo = { isbn, title: '(정보 없음)', author: '', publisher: '', stage: '' };
+      showBookResult(bookInfo);
+    }
+  };
+
+  const s = document.createElement('script');
+  s.id  = 'aladin-jsonp';
+  s.src = 'https://www.aladin.co.kr/ttb/api/ItemLookUp.aspx'
+    + '?ttbkey=' + ALADIN_KEY
+    + '&itemIdType=ISBN13&ItemId=' + isbn
+    + '&output=js&Version=20131101&CallBack=' + cbName;
+  s.onerror = function() {
+    if (done) return;
+    cleanup();
+    // 네트워크 오류 시 ISBN만 전달
+    bookInfo = { isbn, title: '(조회 실패)', author: '', publisher: '', stage: '' };
+    showBookResult(bookInfo);
+  };
+
+  // 5초 타임아웃
+  const timeout = setTimeout(() => {
+    if (done) return;
+    cleanup();
+    bookInfo = { isbn, title: '(조회 시간 초과)', author: '', publisher: '', stage: '' };
+    showBookResult(bookInfo);
+  }, 5000);
+
+  function cleanup() {
+    clearTimeout(timeout);
+    delete window[cbName];
+    const old = document.getElementById('aladin-jsonp');
+    if (old) old.parentNode.removeChild(old);
+  }
+
+  document.head.appendChild(s);
+}
+
+function showBookResult(book) {
+  document.getElementById('result-title').textContent = book.title;
+  document.getElementById('result-isbn').textContent  =
+    (book.author ? book.author + ' / ' : '') +
+    (book.publisher ? book.publisher : '') +
+    '\nISBN: ' + book.isbn;
+  document.getElementById('result-btn').disabled = false;
 }
 
 function confirmScan() {
-  if (!detectedISBN) return;
-  // opener(GAS 웹앱)에 postMessage로 ISBN 전달
+  if (!bookInfo && !detectedISBN) return;
+  const payload = bookInfo
+    ? { type: 'ISBN_SCANNED', isbn: bookInfo.isbn, title: bookInfo.title,
+        author: bookInfo.author, publisher: bookInfo.publisher, stage: bookInfo.stage }
+    : { type: 'ISBN_SCANNED', isbn: detectedISBN };
+
   if (window.opener && !window.opener.closed) {
-    window.opener.postMessage({ type: 'ISBN_SCANNED', isbn: detectedISBN }, '*');
+    window.opener.postMessage(payload, '*');
     window.close();
   } else {
-    // opener가 없으면 URL 방식으로 폴백
     if (!callback) {
       document.getElementById('status').textContent = '등록 완료! 앱으로 돌아가세요.';
       return;
     }
-    const url = decodeURIComponent(callback) + '?isbn=' + detectedISBN;
+    const url = decodeURIComponent(callback) + '?isbn=' + (bookInfo ? bookInfo.isbn : detectedISBN);
     window.location.href = url;
   }
 }

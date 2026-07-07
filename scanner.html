@@ -94,7 +94,32 @@ video {
 <script>
 const params   = new URLSearchParams(window.location.search);
 const callback = params.get('callback') || '';
-const ALADIN_KEY = 'ttbstaeoo1907001';
+const ALADIN_KEY  = 'ttbstaeoo1907001';
+const ISBN_DB_URL = 'https://staeoo4095.github.io/book_repository/isbn_db.json';
+
+// 로컬 ISBN DB (한 번 로드 후 캐시)
+let _isbnDB     = null;
+let _isbnDBLoading = false;
+
+// 앱 시작 시 ISBN DB 미리 로드
+function preloadISBNDB() {
+  if (_isbnDB || _isbnDBLoading) return;
+  _isbnDBLoading = true;
+  fetch(ISBN_DB_URL)
+    .then(r => r.json())
+    .then(data => {
+      _isbnDB = data;
+      console.log('ISBN DB 로드 완료:', Object.keys(data).length + '권');
+    })
+    .catch(e => {
+      console.warn('ISBN DB 로드 실패, 알라딘 API 사용:', e.message);
+      _isbnDB = {};
+    })
+    .finally(() => { _isbnDBLoading = false; });
+}
+
+// 페이지 로드 즉시 DB 미리 로드
+preloadISBNDB();
 let detectedISBN = '';
 let bookInfo     = null;
 let zxingControls = null;
@@ -148,13 +173,33 @@ function startScan() {
 
 // ── 알라딘 JSONP 직접 호출 ────────────────────────────────────────────────────
 function lookupISBNDirect(isbn) {
-  // 스캔 중지 + 로딩 표시
   document.getElementById('status').textContent = '📚 책 정보 조회 중...';
   document.getElementById('result-title').textContent = '조회 중...';
   document.getElementById('result-isbn').textContent  = 'ISBN: ' + isbn;
   document.getElementById('result').classList.add('show');
   document.getElementById('result-btn').disabled = true;
 
+  // 1. 로컬 DB에서 먼저 검색 (즉시)
+  if (_isbnDB && Object.keys(_isbnDB).length > 0) {
+    const local = _isbnDB[isbn] || _isbnDB[isbn.slice(-10)];
+    if (local) {
+      bookInfo = {
+        isbn,
+        title:     local.t || '',
+        author:    local.a || '',
+        publisher: local.p || '',
+        stage:     ''
+      };
+      showBookResult(bookInfo);
+      return; // 알라딘 API 호출 불필요
+    }
+  }
+
+  // 2. 로컬 DB에 없으면 알라딘 JSONP 폴백
+  _lookupAladinJSONP(isbn);
+}
+
+function _lookupAladinJSONP(isbn) {
   const cbName = 'aladin_cb_' + Date.now();
   let done = false;
 
@@ -170,12 +215,10 @@ function lookupISBNDirect(isbn) {
         publisher: (item.publisher || '').trim(),
         stage:     ''
       };
-      showBookResult(bookInfo);
     } else {
-      // 책 정보 없으면 ISBN만 전달
       bookInfo = { isbn, title: '(정보 없음)', author: '', publisher: '', stage: '' };
-      showBookResult(bookInfo);
     }
+    showBookResult(bookInfo);
   };
 
   const s = document.createElement('script');
@@ -187,12 +230,10 @@ function lookupISBNDirect(isbn) {
   s.onerror = function() {
     if (done) return;
     cleanup();
-    // 네트워크 오류 시 ISBN만 전달
     bookInfo = { isbn, title: '(조회 실패)', author: '', publisher: '', stage: '' };
     showBookResult(bookInfo);
   };
 
-  // 5초 타임아웃
   const timeout = setTimeout(() => {
     if (done) return;
     cleanup();

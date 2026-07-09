@@ -470,6 +470,7 @@ function _lookupAladinJSONP(isbn) {
     done = true; cleanup();
     if (success && data && data.item && data.item.length > 0) {
       const item = data.item[0];
+      console.log('알라딘 응답 전체:', JSON.stringify(item, null, 2)); // 디버그용 — 확인 후 지워도 됨
       const book = {
         isbn,
         title:     (item.title || '').replace(/\s*-\s*.*$/, '').trim(),

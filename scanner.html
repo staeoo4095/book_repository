@@ -52,6 +52,12 @@ video {
   padding:0 20px;
 }
 
+#db-status {
+  position:fixed; top:60px; left:0; right:0;
+  text-align:center; font-size:11px; color:rgba(93,202,165,0.9);
+  padding:0 20px;
+}
+
 #result {
   position:fixed; bottom:0; left:0; right:0;
   background:rgba(15,110,86,0.95); padding:20px;
@@ -60,7 +66,7 @@ video {
 }
 #result.show { transform:translateY(0); }
 #result-title { font-size:15px; font-weight:600; margin-bottom:4px; }
-#result-isbn  { font-size:12px; opacity:0.7; margin-bottom:14px; }
+#result-isbn  { font-size:12px; opacity:0.7; margin-bottom:14px; white-space:pre-line; }
 #result-btn {
   width:100%; padding:12px; background:#fff; color:#0F6E56;
   border:none; border-radius:10px; font-size:15px; font-weight:700;
@@ -74,6 +80,8 @@ video {
   <span>📷 ISBN 바코드 스캔</span>
   <button id="close-btn" onclick="closeScanner()">✕</button>
 </div>
+
+<div id="db-status"></div>
 
 <video id="video" playsinline autoplay muted></video>
 
@@ -97,29 +105,88 @@ const callback = params.get('callback') || '';
 const ALADIN_KEY  = 'ttbstaeoo1907001';
 const ISBN_DB_URL = 'https://staeoo4095.github.io/book_repository/isbn_db.json';
 
-// 로컬 ISBN DB (한 번 로드 후 캐시)
-let _isbnDB     = null;
+// ── IndexedDB 캐싱 ────────────────────────────────────────────────────────
+// isbn_db.json을 새로 만들어서 GitHub에 다시 올릴 때마다 이 숫자를 올려주세요.
+// 그러면 이미 캐시를 갖고 있는 사용자들도 자동으로 새 DB를 재다운로드합니다.
+const ISBN_DB_VERSION = 1;
+const IDB_NAME  = 'isbn_cache_db';
+const IDB_STORE = 'kv';
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) { reject(new Error('IndexedDB 미지원')); return; }
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+function idbGet(key) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx  = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  }));
+}
+
+function idbSet(key, value) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  }));
+}
+
+// 로컬 ISBN DB (메모리 캐시 + IndexedDB 영구 캐시)
+let _isbnDB        = null;
 let _isbnDBLoading = false;
 
-// 앱 시작 시 ISBN DB 미리 로드
-function preloadISBNDB() {
+async function preloadISBNDB() {
   if (_isbnDB || _isbnDBLoading) return;
   _isbnDBLoading = true;
-  fetch(ISBN_DB_URL)
-    .then(r => r.json())
-    .then(data => {
-      _isbnDB = data;
-      console.log('ISBN DB 로드 완료:', Object.keys(data).length + '권');
-    })
-    .catch(e => {
-      console.warn('ISBN DB 로드 실패, 알라딘 API 사용:', e.message);
-      _isbnDB = {};
-    })
-    .finally(() => { _isbnDBLoading = false; });
+  const statusEl = document.getElementById('db-status');
+
+  try {
+    const cachedVersion = await idbGet('version');
+    if (cachedVersion === ISBN_DB_VERSION) {
+      const cachedData = await idbGet('data');
+      if (cachedData) {
+        _isbnDB = cachedData;
+        console.log('ISBN DB 캐시 로드 (네트워크 없음):', Object.keys(_isbnDB).length + '권');
+        _isbnDBLoading = false;
+        return;
+      }
+    }
+
+    // 캐시 없음 or 버전 다름 -> 새로 다운로드
+    if (statusEl) statusEl.textContent = '📚 도서 DB 준비 중... (최초 1회, 잠시만요)';
+    console.log('ISBN DB 다운로드 시작...');
+    const resp = await fetch(ISBN_DB_URL);
+    const data = await resp.json();
+    _isbnDB = data;
+    console.log('ISBN DB 다운로드 완료:', Object.keys(data).length + '권');
+    if (statusEl) { statusEl.textContent = ''; }
+
+    // 백그라운드로 IndexedDB에 저장 (실패해도 스캔 자체엔 지장 없음)
+    idbSet('data', data)
+      .then(() => idbSet('version', ISBN_DB_VERSION))
+      .catch(e => console.warn('IndexedDB 저장 실패:', e.message));
+
+  } catch (e) {
+    console.warn('ISBN DB 로드 실패, 알라딘 API만 사용:', e.message);
+    _isbnDB = {};
+    if (statusEl) statusEl.textContent = '';
+  } finally {
+    _isbnDBLoading = false;
+  }
 }
 
 // 페이지 로드 즉시 DB 미리 로드
 preloadISBNDB();
+
 let detectedISBN = '';
 let bookInfo     = null;
 let zxingControls = null;
@@ -158,7 +225,6 @@ function startScan() {
       const val = result.getText().replace(/-/g, '');
       if ((val.length === 13 || val.length === 10) && val !== detectedISBN) {
         detectedISBN = val;
-        // 스캔 성공 즉시 알라딘 API 직접 호출 (JSONP)
         lookupISBNDirect(val);
       }
     }
@@ -171,7 +237,7 @@ function startScan() {
   });
 }
 
-// ── 알라딘 JSONP 직접 호출 ────────────────────────────────────────────────────
+// ── 로컬 DB 우선 조회, 없으면 알라딘 JSONP 폴백 ──────────────────────────────
 function lookupISBNDirect(isbn) {
   document.getElementById('status').textContent = '📚 책 정보 조회 중...';
   document.getElementById('result-title').textContent = '조회 중...';
@@ -179,15 +245,15 @@ function lookupISBNDirect(isbn) {
   document.getElementById('result').classList.add('show');
   document.getElementById('result-btn').disabled = true;
 
-  // 1. 로컬 DB에서 먼저 검색 (즉시)
+  // 1. 로컬 DB에서 먼저 검색 (즉시, 네트워크 없음)
   if (_isbnDB && Object.keys(_isbnDB).length > 0) {
     const local = _isbnDB[isbn] || _isbnDB[isbn.slice(-10)];
     if (local) {
       bookInfo = {
         isbn,
-        title:     local.t || '',
-        author:    local.a || '',
-        publisher: local.p || '',
+        title:     local.title     || '',
+        author:    local.author    || '',
+        publisher: local.publisher || '',
         stage:     ''
       };
       showBookResult(bookInfo);

@@ -462,6 +462,15 @@ async function lookupAndAdd(isbn) {
   _lookupAladinJSONP(isbn);
 }
 
+
+function addPendingBook(isbn) {
+  addScannedBook({
+    isbn, title: '(정보 확인 필요 — 등록 시 자동조회)',
+    author: '', publisher: '', stage: '', pageCount: null,
+    needsLookup: true
+  });
+}
+       
 function _lookupAladinJSONP(isbn) {
   const cbName = 'aladin_cb_' + Date.now();
   let done = false;
@@ -479,10 +488,10 @@ function _lookupAladinJSONP(isbn) {
         stage: '',
         pageCount: (item.subInfo && item.subInfo.itemPage) ? Number(item.subInfo.itemPage) : null
       };
-      if (!book.title) { toast('책 정보를 찾을 수 없어요 (ISBN: ' + isbn + ')', true); return; }
+      if (!book.title) { addPendingBook(isbn); return; }
       addScannedBook(book);
     } else {
-      toast('책 정보를 찾을 수 없어요 (ISBN: ' + isbn + ')', true);
+      addPendingBook(isbn);
     }
   };
   const s = document.createElement('script');
@@ -492,11 +501,11 @@ function _lookupAladinJSONP(isbn) {
     + '&output=js&Version=20131101&OptResult=subInfo&CallBack=' + cbName;
   s.onerror = function() {
     if (done) return; cleanup();
-    toast('조회 실패 (ISBN: ' + isbn + ')', true);
+    addPendingBook(isbn);
   };
   const timeout = setTimeout(() => {
     if (done) return; cleanup();
-    toast('조회 시간 초과 (ISBN: ' + isbn + ')', true);
+    addPendingBook(isbn);
   }, 5000);
   function cleanup() {
     clearTimeout(timeout);

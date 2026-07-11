@@ -376,8 +376,7 @@ function addScannedBook(book) {
   _scannedISBNs.add(book.isbn);
   _scannedBooks.push(book);
   renderScannedList();
-  document.getElementById('scanned-panel').classList.remove('collapsed');
-  document.getElementById('scanned-arrow').textContent = '▼';
+  // 자동으로 펼치지 않음 — 담긴 개수(헤더)만 갱신되고, 펼치려면 직접 헤더를 눌러야 함
   toast('✅ 담김: ' + book.title);
 }
 

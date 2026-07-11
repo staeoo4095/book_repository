@@ -528,9 +528,16 @@ function finishSession() {
   if (window.opener && !window.opener.closed) {
     window.opener.postMessage(payload, '*');
     window.close();
-  } else {
-    toast('앱 창을 찾을 수 없어요. 이 탭을 닫고 앱에서 확인해주세요.', true);
+    return;
   }
+  // opener를 못 찾는 경우(모바일 브라우저에서 흔함) — URL로 넘겨서 안전하게 전달
+  if (callback) {
+    const sep = decodeURIComponent(callback).indexOf('?') >= 0 ? '&' : '?';
+    const url = decodeURIComponent(callback) + sep + 'scannedBooks=' + encodeURIComponent(JSON.stringify(payload));
+    window.location.href = url;
+    return;
+  }
+  toast('앱 창을 찾을 수 없어요. 이 탭을 닫고 앱에서 확인해주세요.', true);
 }
 
 function closeScanner() {

@@ -314,32 +314,24 @@ async function preloadISBNDB() {
   if (_isbnDBReady || _isbnDBLoading || _isbnDBUnavailable) return;
   _isbnDBLoading = true;
   const statusEl = document.getElementById('db-status');
-  const _t0 = Date.now();
   try {
     const cachedVersion = await idbGet(IDB_META, 'version');
-    // ── 🔍 임시 디버그 ──
-    toast('🔍 캐시버전:' + cachedVersion + ' vs 현재:' + ISBN_DB_VERSION, 3000);
     if (cachedVersion === ISBN_DB_VERSION) {
       _isbnDBReady = true;
-      toast('🔍 캐시 사용 (재다운로드 안 함)', 3000);
       return;
     }
     // 캐시 없음 or 버전 다름 → isbn_db.json을 한 번 받아서 ISBN별로 IndexedDB에 저장
     if (statusEl) statusEl.textContent = '📚 도서 DB 준비 중... (최초 1회만, 잠시만요)';
-    toast('🔍 DB 다운로드 시작...', 3000);
     const resp = await fetch(ISBN_DB_URL);
     const data = await resp.json();
-    toast('🔍 다운로드 완료, ' + Object.keys(data).length + '건 저장 시작', 3000);
     await _bulkImportISBNDB(data, statusEl);
     await idbSet(IDB_META, 'version', ISBN_DB_VERSION);
     _isbnDBReady = true;
     if (statusEl) statusEl.textContent = '';
-    toast('🔍 저장 완료! ' + ((Date.now()-_t0)/1000).toFixed(1) + '초 걸림', 4000);
   } catch (e) {
     console.warn('ISBN DB 로드 실패, 알라딘 API만 사용:', e.message);
     _isbnDBUnavailable = true;
     if (statusEl) statusEl.textContent = '';
-    toast('🔍 DB 로드 실패: ' + e.message, 4000);
   } finally {
     _isbnDBLoading = false;
   }
@@ -572,20 +564,15 @@ async function lookupAndAdd(isbn) {
       const shard = await idbGet(IDB_BOOKS, _shardKey(isbn));
       const local = shard && (shard[isbn] || shard[isbn.slice(-10)]);
       if (local && local.title) {
-        toast('🔍 로컬DB 히트: ' + local.title, 3000);
         addScannedBook({
           isbn, title: local.title, author: local.author || '', publisher: local.publisher || '',
           stage: '', pageCount: local.pages || local.pageCount || null
         });
         return;
-      } else {
-        toast('🔍 로컬DB 없음 → 알라딘으로', 3000);
       }
     } catch (e) {
-      toast('🔍 IndexedDB 조회 오류: ' + e.message, 3000);
+      // IndexedDB 조회 실패 → 아래 알라딘 폴백으로 자연스럽게 진행
     }
-  } else {
-    toast('🔍 로컬DB 사용불가 상태', 3000);
   }
   toast('📚 조회 중...');
   _lookupAladinJSONP(isbn);

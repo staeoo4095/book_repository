@@ -222,7 +222,7 @@ const ISBN_DB_URL = 'https://staeoo4095.github.io/book_repository/isbn_db.json';
 // ── IndexedDB 캐싱 — ISBN별 개별 레코드로 저장 (46만 건, 메모리에 통째로 안 올림) ──
 // isbn_db.json을 새로 만들어서 GitHub에 다시 올릴 때마다 이 숫자를 올려주세요.
 // 그러면 이미 캐시를 갖고 있는 사용자들도 자동으로 새 DB를 재다운로드합니다.
-const ISBN_DB_VERSION = 3;
+const ISBN_DB_VERSION = 4;
 const IDB_NAME  = 'isbn_cache_db';
 const IDB_META  = 'kv';     // 버전 등 메타 정보
 const IDB_BOOKS = 'books';  // ISBN → {title, author, publisher, pages} 개별 레코드
@@ -257,24 +257,50 @@ function idbSet(storeName, key, value) {
   }));
 }
 
-// data(전체 JSON) → IDB_BOOKS에 청크 단위로 나눠 저장. 진행률 표시 + 매 청크 사이 메인스레드 양보.
+// ISBN 뒤 3자리를 그룹 키로 사용 (최대 1000개 그룹) — 개별 46만 건을 그대로 레코드화하면
+// IndexedDB 쓰기가 레코드 수 증가에 따라 점점 느려지는 문제가 있어, 그룹 단위로 묶어 저장한다.
+function _shardKey(isbn) {
+  return isbn.slice(-3);
+}
+
+// data(전체 JSON) → 뒤3자리 그룹으로 묶어서 IDB_BOOKS에 저장. 진행률 표시 + 청크 사이 메인스레드 양보.
 async function _bulkImportISBNDB(data, statusEl) {
   const entries = Object.entries(data);
   const total   = entries.length;
-  const CHUNK   = 3000;
+
+  const shards = new Map();
+  entries.forEach(([isbn, info]) => {
+    const key = _shardKey(isbn);
+    let bucket = shards.get(key);
+    if (!bucket) { bucket = {}; shards.set(key, bucket); }
+    bucket[isbn] = info;
+  });
+
+  const shardEntries = [...shards.entries()];
+  const shardTotal   = shardEntries.length;
+  const CHUNK = 50; // 그룹 자체가 이미 크므로(그룹당 평균 수백 건) 적은 수로도 충분
   const db = await idbOpen();
-  for (let i = 0; i < total; i += CHUNK) {
-    const chunk = entries.slice(i, i + CHUNK);
+
+  // 이전 버전(개별 ISBN 레코드) 잔여 데이터 정리
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_BOOKS, 'readwrite');
+    tx.objectStore(IDB_BOOKS).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+
+  for (let i = 0; i < shardTotal; i += CHUNK) {
+    const chunk = shardEntries.slice(i, i + CHUNK);
     await new Promise((resolve, reject) => {
       const tx    = db.transaction(IDB_BOOKS, 'readwrite');
       const store = tx.objectStore(IDB_BOOKS);
-      chunk.forEach(([isbn, info]) => store.put(info, isbn));
+      chunk.forEach(([key, bucket]) => store.put(bucket, key));
       tx.oncomplete = () => resolve();
       tx.onerror    = () => reject(tx.error);
     });
     if (statusEl) {
-      const pct = Math.round(Math.min(i + CHUNK, total) / total * 100);
-      statusEl.textContent = `📚 도서 DB 저장 중... ${pct}% (최초 1회만이에요)`;
+      const pct = Math.round(Math.min(i + CHUNK, shardTotal) / shardTotal * 100);
+      statusEl.textContent = `📚 도서 DB 저장 중... ${pct}% (최초 1회만이에요, ${total}건)`;
     }
     await new Promise(r => setTimeout(r, 0)); // 터치/렌더링이 끼어들 틈을 준다
   }
@@ -543,8 +569,8 @@ async function lookupAndAdd(isbn) {
 
   if (!_isbnDBUnavailable) {
     try {
-      let local = await idbGet(IDB_BOOKS, isbn);
-      if (!local) local = await idbGet(IDB_BOOKS, isbn.slice(-10));
+      const shard = await idbGet(IDB_BOOKS, _shardKey(isbn));
+      const local = shard && (shard[isbn] || shard[isbn.slice(-10)]);
       if (local && local.title) {
         toast('🔍 로컬DB 히트: ' + local.title, 3000);
         addScannedBook({

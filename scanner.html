@@ -327,7 +327,7 @@ function startScanSession() {
     [..._selectedReaders].join(', ') + ' · ' + _sessionDate;
   document.getElementById('reader-screen').style.display = 'none';
   document.getElementById('scan-screen').style.display = 'flex';
-  preloadISBNDB();          // ← 여기로 이동
+
   loadZXingAndStart();
 }
 

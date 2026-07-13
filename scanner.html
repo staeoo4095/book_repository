@@ -270,7 +270,6 @@ async function preloadISBNDB() {
     if (statusEl) statusEl.textContent = '';
   } finally { _isbnDBLoading = false; }
 }
-preloadISBNDB();
 
 // ── 독자 선택 화면 로직 ──────────────────────────────────────────────────────
 let _selectedReaders = new Set();
@@ -326,6 +325,7 @@ function startScanSession() {
     [..._selectedReaders].join(', ') + ' · ' + _sessionDate;
   document.getElementById('reader-screen').style.display = 'none';
   document.getElementById('scan-screen').style.display = 'flex';
+  preloadISBNDB();          // ← 여기로 이동
   loadZXingAndStart();
 }
 

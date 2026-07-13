@@ -219,58 +219,96 @@ try { readerNames = JSON.parse(decodeURIComponent(params.get('children') || '[]'
 const ALADIN_KEY  = 'ttbstaeoo1907001';
 const ISBN_DB_URL = 'https://staeoo4095.github.io/book_repository/isbn_db.json';
 
-// ── IndexedDB 캐싱 (기존과 동일) ───────────────────────────────────────────
-const ISBN_DB_VERSION = 2;
+// ── IndexedDB 캐싱 — ISBN별 개별 레코드로 저장 (46만 건, 메모리에 통째로 안 올림) ──
+// isbn_db.json을 새로 만들어서 GitHub에 다시 올릴 때마다 이 숫자를 올려주세요.
+// 그러면 이미 캐시를 갖고 있는 사용자들도 자동으로 새 DB를 재다운로드합니다.
+const ISBN_DB_VERSION = 3;
 const IDB_NAME  = 'isbn_cache_db';
-const IDB_STORE = 'kv';
+const IDB_META  = 'kv';     // 버전 등 메타 정보
+const IDB_BOOKS = 'books';  // ISBN → {title, author, publisher, pages} 개별 레코드
 
 function idbOpen() {
   return new Promise((resolve, reject) => {
     if (!('indexedDB' in window)) { reject(new Error('IndexedDB 미지원')); return; }
-    const req = indexedDB.open(IDB_NAME, 1);
-    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    const req = indexedDB.open(IDB_NAME, 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_META))  db.createObjectStore(IDB_META);
+      if (!db.objectStoreNames.contains(IDB_BOOKS)) db.createObjectStore(IDB_BOOKS);
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror   = () => reject(req.error);
   });
 }
-function idbGet(key) {
+function idbGet(storeName, key) {
   return idbOpen().then(db => new Promise((resolve, reject) => {
-    const tx  = db.transaction(IDB_STORE, 'readonly');
-    const req = tx.objectStore(IDB_STORE).get(key);
+    const tx  = db.transaction(storeName, 'readonly');
+    const req = tx.objectStore(storeName).get(key);
     req.onsuccess = () => resolve(req.result);
     req.onerror   = () => reject(req.error);
   }));
 }
-function idbSet(key, value) {
+function idbSet(storeName, key, value) {
   return idbOpen().then(db => new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    tx.objectStore(IDB_STORE).put(value, key);
+    const tx = db.transaction(storeName, 'readwrite');
+    tx.objectStore(storeName).put(value, key);
     tx.oncomplete = () => resolve();
     tx.onerror    = () => reject(tx.error);
   }));
 }
 
-let _isbnDB = null, _isbnDBLoading = false;
+// data(전체 JSON) → IDB_BOOKS에 청크 단위로 나눠 저장. 진행률 표시 + 매 청크 사이 메인스레드 양보.
+async function _bulkImportISBNDB(data, statusEl) {
+  const entries = Object.entries(data);
+  const total   = entries.length;
+  const CHUNK   = 3000;
+  const db = await idbOpen();
+  for (let i = 0; i < total; i += CHUNK) {
+    const chunk = entries.slice(i, i + CHUNK);
+    await new Promise((resolve, reject) => {
+      const tx    = db.transaction(IDB_BOOKS, 'readwrite');
+      const store = tx.objectStore(IDB_BOOKS);
+      chunk.forEach(([isbn, info]) => store.put(info, isbn));
+      tx.oncomplete = () => resolve();
+      tx.onerror    = () => reject(tx.error);
+    });
+    if (statusEl) {
+      const pct = Math.round(Math.min(i + CHUNK, total) / total * 100);
+      statusEl.textContent = `📚 도서 DB 저장 중... ${pct}% (최초 1회만이에요)`;
+    }
+    await new Promise(r => setTimeout(r, 0)); // 터치/렌더링이 끼어들 틈을 준다
+  }
+}
+
+let _isbnDBReady       = false; // IndexedDB에 최신 버전 데이터가 준비됐는지
+let _isbnDBLoading     = false;
+let _isbnDBUnavailable = false; // IndexedDB 미지원/실패 → 알라딘 API만 사용
+
 async function preloadISBNDB() {
-  if (_isbnDB || _isbnDBLoading) return;
+  if (_isbnDBReady || _isbnDBLoading || _isbnDBUnavailable) return;
   _isbnDBLoading = true;
   const statusEl = document.getElementById('db-status');
   try {
-    const cachedVersion = await idbGet('version');
+    const cachedVersion = await idbGet(IDB_META, 'version');
     if (cachedVersion === ISBN_DB_VERSION) {
-      const cachedData = await idbGet('data');
-      if (cachedData) { _isbnDB = cachedData; _isbnDBLoading = false; return; }
+      _isbnDBReady = true;
+      return;
     }
-    if (statusEl) statusEl.textContent = '📚 도서 DB 준비 중...';
+    // 캐시 없음 or 버전 다름 → isbn_db.json을 한 번 받아서 ISBN별로 IndexedDB에 저장
+    if (statusEl) statusEl.textContent = '📚 도서 DB 준비 중... (최초 1회만, 잠시만요)';
     const resp = await fetch(ISBN_DB_URL);
     const data = await resp.json();
-    _isbnDB = data;
+    await _bulkImportISBNDB(data, statusEl);
+    await idbSet(IDB_META, 'version', ISBN_DB_VERSION);
+    _isbnDBReady = true;
     if (statusEl) statusEl.textContent = '';
-    idbSet('data', data).then(() => idbSet('version', ISBN_DB_VERSION)).catch(()=>{});
   } catch (e) {
-    _isbnDB = {};
+    console.warn('ISBN DB 로드 실패, 알라딘 API만 사용:', e.message);
+    _isbnDBUnavailable = true;
     if (statusEl) statusEl.textContent = '';
-  } finally { _isbnDBLoading = false; }
+  } finally {
+    _isbnDBLoading = false;
+  }
 }
 
 // ── 독자 선택 화면 로직 ──────────────────────────────────────────────────────
@@ -328,6 +366,7 @@ function startScanSession() {
   document.getElementById('reader-screen').style.display = 'none';
   document.getElementById('scan-screen').style.display = 'flex';
 
+  preloadISBNDB();
   loadZXingAndStart();
 }
 
@@ -494,11 +533,19 @@ document.getElementById('manual-isbn').addEventListener('keydown', e => {
 async function lookupAndAdd(isbn) {
   if (_scannedISBNs.has(isbn)) { toast('이미 담겨있어요', true); return; }
 
-  if (_isbnDB && Object.keys(_isbnDB).length > 0) {
-    const local = _isbnDB[isbn] || _isbnDB[isbn.slice(-10)];
-    if (local && local.title) {
-      addScannedBook({ isbn, title: local.title, author: local.author||'', publisher: local.publisher||'', stage:'', pageCount:null });
-      return;
+  if (!_isbnDBUnavailable) {
+    try {
+      let local = await idbGet(IDB_BOOKS, isbn);
+      if (!local) local = await idbGet(IDB_BOOKS, isbn.slice(-10));
+      if (local && local.title) {
+        addScannedBook({
+          isbn, title: local.title, author: local.author || '', publisher: local.publisher || '',
+          stage: '', pageCount: local.pages || local.pageCount || null
+        });
+        return;
+      }
+    } catch (e) {
+      // IndexedDB 조회 실패 → 아래 알라딘 폴백으로 자연스럽게 진행
     }
   }
   toast('📚 조회 중...');

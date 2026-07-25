@@ -487,9 +487,11 @@ function isValidBarcode(code) {
 }
        
 let _lastDecoded = '';
-let _decodeLock  = false;
 let _candidateVal   = '';
 let _candidateCount = 0;
+let _pendingISBNs = new Set(); // 조회(로컬DB/알라딘) 진행 중인 ISBN — 완료 전 중복 처리만 막고,
+                                // 다른 책 스캔은 안 막는다(예전엔 조회 끝날 때까지 전체가 잠겨서
+                                // 로컬DB에 없는 책 한 권마다 최대 5.8초씩 다음 책을 못 찍었음).
 
 function startScan() {
   const video = document.getElementById('video');
@@ -503,7 +505,7 @@ function startScan() {
     { video: { facingMode: { exact: 'environment' }, width:{min:640,ideal:1920,max:1920}, height:{min:480,ideal:1080,max:1080}, focusMode:'continuous' } },
     video,
    (result) => {
-      if (!result || _decodeLock) return;
+      if (!result) return;
       const val = result.getText().replace(/-/g, '');
       if (val.length !== 13 && val.length !== 10) return;
       if (!isValidBarcode(val)) return; // 체크섬 불일치 → 오독으로 판단, 무시
@@ -517,19 +519,25 @@ function startScan() {
       }
       if (_candidateCount < 2) return;
 
-      if (val !== _lastDecoded) {
-        _lastDecoded = val;
-        handleScannedISBN(val);
-      }
+      if (val === _lastDecoded) return; // 같은 책이 카메라에 계속 잡혀있는 동안 재처리 방지
+      if (_scannedISBNs.has(val) || _pendingISBNs.has(val)) return; // 이미 담겼거나 조회 중
+      _lastDecoded = val;
+      handleScannedISBN(val);
     }
   ).then(ctrl => { zxingControls = ctrl; })
    .catch(e => toast('카메라 오류: ' + (e.name === 'NotAllowedError' ? '카메라 권한을 허용해주세요' : e.message), true));
 }
 
 async function handleScannedISBN(isbn) {
-  _decodeLock = true;
-  await lookupAndAdd(isbn);
-  setTimeout(() => { _decodeLock = false; }, 800); // 연속 오인식 방지용 짧은 쿨다운
+  _pendingISBNs.add(isbn);
+  try {
+    await lookupAndAdd(isbn);
+  } finally {
+    _pendingISBNs.delete(isbn);
+    // 다음에 같은 바코드가 다시 잡히면 재처리할 수 있도록 짧게 후 초기화(카메라가 아직
+    // 같은 책을 보고 있는 동안의 즉시 재트리거만 막는 용도, 다른 책 스캔은 처음부터 안 막힘).
+    setTimeout(() => { if (_lastDecoded === isbn) _lastDecoded = ''; }, 600);
+  }
 }
 
 // ── 수동 입력 ──────────────────────────────────────────────────────────────
@@ -622,7 +630,8 @@ function _lookupAladinJSONP(isbn) {
   const timeout = setTimeout(() => {
     if (done) return; cleanup();
     addPendingBook(isbn);
-  }, 5000);
+  }, 2500); // 이제 스캔을 안 막으니(비동기로 백그라운드 처리) 너무 길 필요 없음 — 어차피 늦게
+            // 와도 addPendingBook으로 담겨서 서버 등록 때 국립중앙도서관으로 마저 조회됨
   function cleanup() {
     clearTimeout(timeout);
     delete window[cbName];

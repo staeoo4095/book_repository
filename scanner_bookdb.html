@@ -44,6 +44,29 @@ body { background:#000; color:#fff; font-family:-apple-system,sans-serif;
   color:#fff; font-size:16px; font-weight:700; cursor:pointer;
 }
 #start-scan-btn:disabled { background:rgba(255,255,255,0.15); color:rgba(255,255,255,0.4); }
+#inapp-warn {
+  display:none; background:rgba(245,183,74,0.14); border:1px solid rgba(245,183,74,0.45);
+  border-radius:10px; padding:13px 14px; margin-bottom:20px; font-size:13px; line-height:1.65;
+  color:#f5d9a4;
+}
+#inapp-warn b { color:#f5b74a; }
+#inapp-warn button {
+  width:100%; margin-top:11px; padding:12px; border:none; border-radius:9px;
+  background:#f5b74a; color:#241a05; font-size:14px; font-weight:700; cursor:pointer;
+}
+#cam-error {
+  display:none; position:fixed; inset:0; z-index:70; background:rgba(0,0,0,0.92);
+  align-items:center; justify-content:center; padding:28px;
+}
+#cam-error .box { max-width:340px; text-align:center; }
+#cam-error .t { font-size:17px; font-weight:700; margin-bottom:12px; }
+#cam-error .m { font-size:13.5px; line-height:1.75; color:rgba(255,255,255,0.78); margin-bottom:22px; }
+#cam-error button {
+  width:100%; padding:13px; border:none; border-radius:11px; font-size:14.5px;
+  font-weight:700; cursor:pointer; margin-bottom:9px;
+}
+#cam-error .go { background:#f5b74a; color:#241a05; }
+#cam-error .back { background:rgba(255,255,255,0.14); color:#fff; }
 #no-children-note {
   font-size:12px; color:#f5b74a; background:rgba(245,183,74,0.12); border-radius:8px;
   padding:10px 12px; margin-bottom:18px; line-height:1.6; display:none;
@@ -154,6 +177,13 @@ video { width:100%; height:100vh; height:100dvh; object-fit:cover; display:block
   <h2>📷 바코드로 책 등록</h2>
   <div class="sub">먼저 누가 읽었는지 선택하고, 여러 권을 연속으로 스캔한 뒤 한 번에 등록하세요.</div>
 
+  <div id="inapp-warn">
+    <b>⚠️ 카카오톡 브라우저에서는 카메라가 열리지 않습니다.</b><br>
+    카카오톡·인스타 같은 앱 안의 브라우저는 보안상 카메라를 차단합니다.
+    아래 버튼으로 기본 브라우저에서 열어 주세요.
+    <button onclick="openExternalBrowser()">기본 브라우저에서 열기</button>
+  </div>
+
   <div class="section-label">읽은 사람 (여러 명 선택 가능)</div>
   <div id="no-children-note">등록된 자녀가 없어요. 아래에서 이름을 입력해 추가하거나, 앱의 설정 탭에서 먼저 등록해주세요.</div>
   <div class="reader-chips" id="reader-chips"></div>
@@ -208,6 +238,15 @@ video { width:100%; height:100vh; height:100dvh; object-fit:cover; display:block
   </div>
 </div>
 
+<div id="cam-error">
+  <div class="box">
+    <div class="t">카메라를 열 수 없어요</div>
+    <div class="m" id="cam-error-msg"></div>
+    <button class="go" id="cam-error-go" style="display:none" onclick="openExternalBrowser()">기본 브라우저에서 열기</button>
+    <button class="back" onclick="closeScanner()">돌아가기</button>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -222,6 +261,57 @@ if (_preReader) _preReader.split(',').map(s=>s.trim()).filter(Boolean).forEach(n
 // 인증키는 소스에 두지 않는다(이 파일은 공개 저장소에 올라간다).
 // 앱이 스캐너를 열 때 ?k= 로 넘겨준다. 없으면 조회를 건너뛰고 제목 없이 담는다.
 const SEOJI_KEY = params.get('k') || '';
+
+// ── 인앱 브라우저 감지 ───────────────────────────────────────────────────────
+// iOS 카카오톡 웹뷰는 getUserMedia를 아예 막아 놓아서, 권한을 허용해도 카메라가 안 열린다.
+// 네이버앱·인스타·페북·라인도 같거나 불안정하다. 미리 알려주고 기본 브라우저로 보낸다.
+const _UA = navigator.userAgent || '';
+const _isKakao = /KAKAOTALK/i.test(_UA);
+const _isInApp = _isKakao || /NAVER\(inapp|Instagram|FBAN|FBAV|FB_IAB|Line\/|DaumApps|everytimeApp/i.test(_UA);
+const _isAndroid = /android/i.test(_UA);
+
+function openExternalBrowser() {
+  const here = window.location.href;
+  if (_isKakao) {
+    // 카카오톡 전용 스킴 — iOS는 Safari, 안드로이드는 기본 브라우저로 열린다
+    window.location.href = 'kakaotalk://web/openExternal?url=' + encodeURIComponent(here);
+    return;
+  }
+  if (_isAndroid) {
+    window.location.href = 'intent://' + here.replace(/^https?:\/\//, '')
+      + '#Intent;scheme=https;action=android.intent.action.VIEW;end';
+    return;
+  }
+  // iOS 기타 인앱 — 스킴이 없으므로 주소를 복사해 준다
+  try {
+    navigator.clipboard.writeText(here);
+    toast('주소를 복사했어요. Safari에 붙여넣어 주세요.');
+  } catch (e) {
+    prompt('아래 주소를 복사해 Safari에서 열어 주세요', here);
+  }
+}
+
+if (_isInApp) document.getElementById('inapp-warn').style.display = 'block';
+
+function showCameraError(err) {
+  const name = (err && err.name) || '';
+  let msg;
+  if (_isInApp) {
+    msg = '카카오톡 등 앱 안의 브라우저는 카메라 사용을 차단합니다. '
+        + '기본 브라우저(Safari·Chrome)에서 열면 바로 됩니다.';
+  } else if (name === 'NotAllowedError') {
+    msg = '브라우저가 카메라 권한을 거부했습니다.<br><br>'
+        + 'iPhone: 설정 → Safari → 카메라 → 허용<br>'
+        + '또는 주소창 왼쪽 아이콘을 눌러 카메라를 허용해 주세요.';
+  } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+    msg = '사용할 수 있는 후면 카메라를 찾지 못했습니다.';
+  } else {
+    msg = '카메라 오류: ' + ((err && err.message) || name || '알 수 없음');
+  }
+  document.getElementById('cam-error-msg').innerHTML = msg;
+  document.getElementById('cam-error-go').style.display = _isInApp ? 'block' : 'none';
+  document.getElementById('cam-error').style.display = 'flex';
+}
 
 // ── 독자 선택 화면 로직 ──────────────────────────────────────────────────────
 let _selectedReaders = new Set();
@@ -389,10 +479,14 @@ function startScan() {
     ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8, ZXing.BarcodeFormat.CODE_128,
   ]);
   const codeReader = new ZXing.BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 150 });
-  codeReader.decodeFromConstraints(
+  // 제약을 단계적으로 완화하며 시도한다 — exact:'environment'가 없는 기기에서
+  // 즉시 실패해 버리지 않도록.
+  const _constraints = [
     { video: { facingMode: { exact: 'environment' }, width:{min:640,ideal:1920,max:1920}, height:{min:480,ideal:1080,max:1080}, focusMode:'continuous' } },
-    video,
-   (result) => {
+    { video: { facingMode: 'environment' } },
+    { video: true }
+  ];
+  const _onResult = (result) => {
       if (!result) return;
       const val = result.getText().replace(/-/g, '');
       if (val.length !== 13 && val.length !== 10) return;
@@ -411,9 +505,19 @@ function startScan() {
       if (_scannedISBNs.has(val) || _pendingISBNs.has(val)) return; // 이미 담겼거나 조회 중
       _lastDecoded = val;
       handleScannedISBN(val);
-    }
-  ).then(ctrl => { zxingControls = ctrl; })
-   .catch(e => toast('카메라 오류: ' + (e.name === 'NotAllowedError' ? '카메라 권한을 허용해주세요' : e.message), true));
+  };
+
+  let _ci = 0;
+  (function tryNext() {
+    codeReader.decodeFromConstraints(_constraints[_ci], video, _onResult)
+      .then(ctrl => { zxingControls = ctrl; })
+      .catch(e => {
+        // 권한 거부는 제약을 바꿔도 소용없다 — 바로 안내한다.
+        if (e && e.name === 'NotAllowedError') { showCameraError(e); return; }
+        if (++_ci < _constraints.length) { tryNext(); return; }
+        showCameraError(e);
+      });
+  })();
 }
 
 async function handleScannedISBN(isbn) {

@@ -769,7 +769,7 @@ function showDone(n, stageFilled) {
   document.getElementById('done-sub').textContent =
     [..._selectedReaders].join(', ') + ' · ' + _sessionDate +
     (_selectedWriter ? ' · 기록: ' + _selectedWriter : '') +
-    (stageFilled ? ' · JK단계 ' + stageFilled + '권 자동입력' : '');
+    (stageFilled ? ' · 단계 ' + stageFilled + '권 자동입력' : '');
   document.getElementById('done-screen').style.display = 'flex';
   _scannedBooks = [];
   _scannedISBNs.clear();

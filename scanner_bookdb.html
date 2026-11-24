@@ -646,6 +646,16 @@ document.getElementById('manual-isbn').addEventListener('keydown', e => {
 // ── 조회: 국립중앙도서관 SEOJI 직접 호출 (ACAO:* 허용, 단건 0.15초) ─────────
 // 로컬 ISBN 캐시를 두지 않는다 — 전체 300만 건은 GitHub 100MB 제한을 넘고,
 // 실시간 조회가 신간까지 커버하면서 배포 용량이 0이다.
+// SEOJI 의 PAGE 는 '149 p.' 말고도 '[1]장 (접지), 149 p.' · '악보 1책 (166 p.)' ·
+// '147, 15 p.'(본문+부록) · '1,520page'(천 단위 콤마) 처럼 숫자가 여럿인 표기가 있다.
+// 첫 숫자를 쓰면 1 이나 부록 쪽수를 읽는다 — 국중 ISBN DB 145만건으로 재보니
+// 아동서 19.4만건 중 164건(0.085%)이 그랬다. 콤마를 붙인 뒤 가장 큰 수를 쓴다.
+function _pageNum(v) {
+  const t = String(v == null ? '' : v).replace(/(\d),(\d{3})(?!\d)/g, '$1$2');
+  const ns = (t.match(/\d{1,5}/g) || []).map(Number).filter(function (n) { return n > 0; });
+  return ns.length ? Math.max.apply(null, ns) : null;
+}
+
 async function _lookupSeoji(isbn) {
   if (!SEOJI_KEY) return null;   // 앱을 거치지 않고 열린 경우
   const url = 'https://www.nl.go.kr/seoji/SearchApi.do?cert_key=' + SEOJI_KEY
@@ -655,12 +665,11 @@ async function _lookupSeoji(isbn) {
   const j = await r.json();
   const d = (j.docs || [])[0];
   if (!d) return null;
-  const pg = String(d.PAGE || '').match(/(\d{1,5})/);
   return {
     title:     String(d.TITLE || '').replace(/\s+/g, ' ').trim(),
     author:    String(d.AUTHOR || '').trim(),
     publisher: String(d.PUBLISHER || '').trim(),
-    pageCount: pg ? Number(pg[1]) : null,
+    pageCount: _pageNum(d.PAGE),
     // SUBJECT 는 한국십진분류 대분류 한 자리(8=문학, 2=종교 …)다. 아동서의 99.8%에
     // 들어 있어서 이것만 실어 보내면 서버가 '영역'을 채운다. 추가 조회가 없다.
     subject:   String(d.SUBJECT || '').trim()
